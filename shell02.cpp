@@ -356,7 +356,7 @@ void ResizeShellWindows(int dpi);
 HWND FindTrayNotifyWnd() {
     HWND hTrayWnd = FindWindowW(L"Shell_TrayWnd", NULL);
     if (!hTrayWnd) return NULL;
-
+    
     // Look for TrayNotifyWnd inside Shell_TrayWnd
     HWND hTrayNotifyWnd = FindWindowExW(hTrayWnd, NULL, L"TrayNotifyWnd", NULL);
     if (!hTrayNotifyWnd) {
@@ -370,7 +370,7 @@ HWND FindTrayNotifyWnd() {
 BOOL CALLBACK EnumTrayWindowsProc(HWND hwnd, LPARAM lParam) {
     wchar_t className[256];
     GetClassNameW(hwnd, className, 256);
-
+    
     // Look for tooltip class (tray icons send notifications to these)
     if (wcsstr(className, L"Tooltip") || wcsstr(className, L"NotifyIconOverflowWindow")) {
         // Found a potential tray icon container
@@ -385,7 +385,7 @@ std::wstring GetProcessName(DWORD processId) {
     if (hProcess) {
         wchar_t exePath[MAX_PATH] = {0};
         DWORD pathSize = MAX_PATH;
-
+        
         if (QueryFullProcessImageNameW(hProcess, 0, exePath, &pathSize)) {
             std::wstring pathStr = exePath;
             size_t lastSlash = pathStr.find_last_of(L"\\");
@@ -418,7 +418,7 @@ void PopulateRealTrayIcons() {
         }
     }
     g_realTrayIcons.clear();
-
+    
     // Clear our drawn tray icons
     for (auto& icon : g_trayIcons) {
         if (icon.hIcon && !icon.isRealIcon) {
@@ -426,45 +426,45 @@ void PopulateRealTrayIcons() {
         }
     }
     g_trayIcons.clear();
-
+    
     // ADD SYSTEM ICONS FIRST so they always show
     AddCommonTrayIcons();
-
+    
     // Get all top-level windows and look for tray-like behavior
     std::vector<HWND> potentialTrayWindows;
-
+    
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
         auto& windows = *reinterpret_cast<std::vector<HWND>*>(lParam);
-
+        
         if (!IsWindowVisible(hwnd)) return TRUE;
-
+        
         // Get window class
         wchar_t className[256];
         GetClassNameW(hwnd, className, 256);
-
+        
         // Look for windows that might have tray icons
         // Many apps create hidden windows for tray notifications
         DWORD processId;
         GetWindowThreadProcessId(hwnd, &processId);
-
+        
         // Check window style and extended style
         LONG style = GetWindowLongW(hwnd, GWL_STYLE);
         LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
-
+        
         // Hidden windows with tooltip styles might be tray owners
         if ((style & WS_POPUP) && (exStyle & WS_EX_TOOLWINDOW)) {
             windows.push_back(hwnd);
         }
-
+        
         return TRUE;
     }, reinterpret_cast<LPARAM>(&potentialTrayWindows));
-
+    
     // Now try to communicate with these windows to get tray data
     // This is a simplified approach - real implementation would use Shell Hook
     for (HWND hwnd : potentialTrayWindows) {
         DWORD processId;
         GetWindowThreadProcessId(hwnd, &processId);
-
+        
         // Try to get the window's icon
         HICON hIcon = (HICON)SendMessageW(hwnd, WM_GETICON, ICON_SMALL, 0);
         if (!hIcon) {
@@ -473,7 +473,7 @@ void PopulateRealTrayIcons() {
         if (!hIcon) {
             hIcon = (HICON)GetClassLongPtrW(hwnd, GCLP_HICONSM);
         }
-
+        
         if (hIcon) {
             RealTrayIcon trayIcon = {};
             trayIcon.hWnd = hwnd;
@@ -482,11 +482,11 @@ void PopulateRealTrayIcons() {
             trayIcon.tooltip = GetWindowTextSafe(hwnd);
             trayIcon.appName = GetProcessName(processId);
             trayIcon.hidden = false;
-
+            
             g_realTrayIcons.push_back(trayIcon);
         }
     }
-
+    
     // NOW add the detected real tray icons AFTER system icons
     for (size_t i = 0; i < g_realTrayIcons.size(); ++i) {
         TrayIcon ti;
@@ -507,11 +507,11 @@ void AddCommonTrayIcons() {
         TrayIcon ti;
         ti.name = L"Volume";
         ti.isRealIcon = false;
-
+        
         // Try to get the actual volume icon from Windows
         HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
         if (hShell32) {
-            ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(168), IMAGE_ICON,
+            ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(168), IMAGE_ICON, 
                                         g_trayIconSize, g_trayIconSize, LR_SHARED);
             FreeLibrary(hShell32);
         }
@@ -522,16 +522,16 @@ void AddCommonTrayIcons() {
         ti.height = g_trayIconSize;
         g_trayIcons.push_back(ti);
     }
-
+    
     // Network icon
     {
         TrayIcon ti;
         ti.name = L"Network";
         ti.isRealIcon = false;
-
+        
         HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
         if (hShell32) {
-            ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(17), IMAGE_ICON,
+            ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(17), IMAGE_ICON, 
                                         g_trayIconSize, g_trayIconSize, LR_SHARED);
             FreeLibrary(hShell32);
         }
@@ -542,8 +542,28 @@ void AddCommonTrayIcons() {
         ti.height = g_trayIconSize;
         g_trayIcons.push_back(ti);
     }
-
-    // Clock
+    
+    // Power/battery
+    {
+        TrayIcon ti;
+        ti.name = L"Power";
+        ti.isRealIcon = false;
+        
+        HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
+        if (hShell32) {
+            ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(244), IMAGE_ICON, 
+                                        g_trayIconSize, g_trayIconSize, LR_SHARED);
+            FreeLibrary(hShell32);
+        }
+        if (!ti.hIcon) {
+            ti.hIcon = NULL;
+        }
+        ti.width = g_trayIconSize;
+        ti.height = g_trayIconSize;
+        g_trayIcons.push_back(ti);
+    }
+    
+    // Clock (last, on the right)
     {
         TrayIcon ti;
         ti.name = L"Clock";
@@ -553,59 +573,39 @@ void AddCommonTrayIcons() {
         ti.height = g_trayIconSize;
         g_trayIcons.push_back(ti);
     }
-
-    // Power/battery
-    {
-        TrayIcon ti;
-        ti.name = L"Power";
-        ti.isRealIcon = false;
-
-        HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
-        if (hShell32) {
-            ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(244), IMAGE_ICON,
-                                        g_trayIconSize, g_trayIconSize, LR_SHARED);
-            FreeLibrary(hShell32);
-        }
-        if (!ti.hIcon) {
-            ti.hIcon = NULL;
-        }
-        ti.width = g_trayIconSize;
-        ti.height = g_trayIconSize;
-        g_trayIcons.push_back(ti);
-    }
 }
 
 // Draw time in tray
 void DrawTrayTime(Gdiplus::Graphics* g, int x, int y, int width, int height) {
     SYSTEMTIME st;
     GetLocalTime(&st);
-
+    
     wchar_t timeStr[64];
     wsprintfW(timeStr, L"%02d:%02d", st.wHour, st.wMinute);
-
+    
     Gdiplus::FontFamily fontFamily(L"Segoe UI");
     Gdiplus::Font timeFont(&fontFamily, 13, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel); // Increased from 11 to 13
     Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, 240, 240, 240));
-
+    
     Gdiplus::RectF textRect(x, y, width, height);
     Gdiplus::StringFormat format;
     format.SetAlignment(Gdiplus::StringAlignmentCenter);
     format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-
+    
     g->DrawString(timeStr, -1, &timeFont, textRect, &format, &textBrush);
 }
 
 // Handle tray icon clicks
 void HandleTrayIconClick(int index, bool rightClick) {
     if (index < 0 || index >= (int)g_trayIcons.size()) return;
-
+    
     TrayIcon& icon = g_trayIcons[index];
-
+    
     if (icon.isRealIcon && icon.realOwner) {
         // Send message to the real tray icon owner
         if (rightClick) {
             // Right click - show context menu
-            SendMessageW(icon.realOwner, WM_CONTEXTMENU, (WPARAM)icon.realOwner,
+            SendMessageW(icon.realOwner, WM_CONTEXTMENU, (WPARAM)icon.realOwner, 
                         MAKELPARAM(icon.x + icon.width/2, icon.y + icon.height/2));
         } else {
             // Left click - simulate normal tray icon click
@@ -616,27 +616,21 @@ void HandleTrayIconClick(int index, bool rightClick) {
         // Handle our built-in icons
         if (icon.name == L"Volume") {
             if (rightClick) {
-                // Open sound settings
-                ShellExecuteW(NULL, L"open", L"ms-settings:sound", NULL, NULL, SW_SHOW);
+                // Open sound control panel
+                ShellExecuteW(NULL, L"open", L"control.exe", L"mmsys.cpl", NULL, SW_SHOW);
             } else {
                 // Open legacy volume control that works without explorer
                 ShellExecuteW(NULL, L"open", L"sndvol.exe", NULL, NULL, SW_SHOW);
             }
         } else if (icon.name == L"Network") {
-            if (rightClick) {
-                ShellExecuteW(NULL, L"open", L"ms-settings:network", NULL, NULL, SW_SHOW);
-            } else {
-                ShellExecuteW(NULL, L"open", L"ncpa.cpl", NULL, NULL, SW_SHOW);
-            }
+            // Open network connections control panel
+            ShellExecuteW(NULL, L"open", L"control.exe", L"ncpa.cpl", NULL, SW_SHOW);
         } else if (icon.name == L"Power") {
-            if (rightClick) {
-                ShellExecuteW(NULL, L"open", L"ms-settings:powersleep", NULL, NULL, SW_SHOW);
-            } else {
-                ShellExecuteW(NULL, L"open", L"powercfg.cpl", NULL, NULL, SW_SHOW);
-            }
+            // Open power options control panel
+            ShellExecuteW(NULL, L"open", L"control.exe", L"powercfg.cpl", NULL, SW_SHOW);
         } else if (icon.name == L"Clock") {
-            // Open Date & Time settings or control panel
-            ShellExecuteW(NULL, L"open", L"timedate.cpl", NULL, NULL, SW_SHOW);
+            // Open Date & Time control panel
+            ShellExecuteW(NULL, L"open", L"control.exe", L"timedate.cpl", NULL, SW_SHOW);
         }
     }
 }
@@ -842,14 +836,14 @@ void SaveTaskbarConfig() {
         }
 
         jConfig["windows"] = jWindows;
-
+        
         // Save background image path
         if (!g_backgroundPath.empty()) {
             char bgPath[MAX_PATH];
             WideCharToMultiByte(CP_UTF8, 0, g_backgroundPath.c_str(), -1, bgPath, sizeof(bgPath), NULL, NULL);
             jConfig["background"] = bgPath;
         }
-
+        
         // Save custom colors
         jConfig["taskbarColor"] = {
             {"r", GetRValue(g_taskbarColor)},
@@ -936,7 +930,7 @@ void LoadWindowPositions() {
                     g_startMenuHeightCfg = sm.value("height", 0);
                 }
             }
-
+            
             // Load background image path
             if (jConfig.contains("background") && jConfig["background"].is_string()) {
                 std::string bgPath = jConfig["background"].get<std::string>();
@@ -944,7 +938,7 @@ void LoadWindowPositions() {
                     wchar_t wPath[MAX_PATH];
                     MultiByteToWideChar(CP_UTF8, 0, bgPath.c_str(), -1, wPath, MAX_PATH);
                     g_backgroundPath = wPath;
-
+                    
                     // Load the image
                     if (g_backgroundImage) {
                         delete g_backgroundImage;
@@ -957,7 +951,7 @@ void LoadWindowPositions() {
                     }
                 }
             }
-
+            
             // Load custom colors
             if (jConfig.contains("taskbarColor") && jConfig["taskbarColor"].is_object()) {
                 auto& tc = jConfig["taskbarColor"];
@@ -1422,7 +1416,7 @@ void PopulateDesktopIcons() {
             FindClose(hFind);
         }
     }
-
+    
     if (g_autoArrange) SortByName();
 
     LoadDesktopPositions();
@@ -1612,13 +1606,13 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             // Choose color for taskbar
             CHOOSECOLORW cc = {};
             static COLORREF customColors[16] = {0};
-
+            
             cc.lStructSize = sizeof(cc);
             cc.hwndOwner = hwnd;
             cc.lpCustColors = customColors;
             cc.rgbResult = g_taskbarColor;
             cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-
+            
             if (ChooseColorW(&cc)) {
                 g_taskbarColor = cc.rgbResult;
                 SaveTaskbarConfig();
@@ -1630,13 +1624,13 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             // Choose color for start menu
             CHOOSECOLORW cc = {};
             static COLORREF customColors2[16] = {0};
-
+            
             cc.lStructSize = sizeof(cc);
             cc.hwndOwner = hwnd;
             cc.lpCustColors = customColors2;
             cc.rgbResult = g_startMenuColor;
             cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-
+            
             if (ChooseColorW(&cc)) {
                 g_startMenuColor = cc.rgbResult;
                 SaveTaskbarConfig();
@@ -1648,7 +1642,7 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             // Open file dialog to select background image
             OPENFILENAMEW ofn = {};
             wchar_t szFile[MAX_PATH] = L"";
-
+            
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hwnd;
             ofn.lpstrFile = szFile;
@@ -1657,14 +1651,14 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             ofn.nFilterIndex = 1;
             ofn.lpstrTitle = L"Select Background Image";
             ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
+            
             if (GetOpenFileNameW(&ofn)) {
                 // Load the new background image
                 if (g_backgroundImage) {
                     delete g_backgroundImage;
                     g_backgroundImage = NULL;
                 }
-
+                
                 g_backgroundImage = Gdiplus::Bitmap::FromFile(szFile);
                 if (g_backgroundImage && g_backgroundImage->GetLastStatus() == Gdiplus::Ok) {
                     g_backgroundPath = szFile;
@@ -1974,50 +1968,50 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         // ==================== NEW: IMPROVED TRAY ICONS AREA ====================
-
+        
         // Calculate tray area width based on number of icons
         int trayAreaWidth = 180; // Increased from 120 to fit all icons with proper spacing
-
+        
         // Draw background for tray area (same as taskbar color)
         BYTE tr = GetRValue(g_taskbarColor);
         BYTE tg = GetGValue(g_taskbarColor);
         BYTE tb = GetBValue(g_taskbarColor);
         Gdiplus::SolidBrush trayBgBrush(Gdiplus::Color(255, tr, tg, tb));
         g.FillRectangle(&trayBgBrush, rcClient.right - trayAreaWidth, 0, trayAreaWidth, rcClient.bottom);
-
+        
         // Draw separator line (subtle)
         Gdiplus::Pen separatorPen(Gdiplus::Color(50, 100, 100, 100), 1.0f);
-        g.DrawLine(&separatorPen, rcClient.right - trayAreaWidth, 5,
+        g.DrawLine(&separatorPen, rcClient.right - trayAreaWidth, 5, 
                    rcClient.right - trayAreaWidth, rcClient.bottom - 5);
-
+        
         // Position tray icons horizontally (Windows 11 style)
         int trayStartX = rcClient.right - trayAreaWidth + 8;
         int trayY = (rcClient.bottom - g_trayIconSize) / 2;
         int currentTrayX = trayStartX;
-
+        
         // Draw each tray icon
         for (size_t i = 0; i < g_trayIcons.size(); ++i) {
             // Use the icon's actual width (clock is wider)
             int iconWidth = g_trayIcons[i].width;
-
+            
             if (currentTrayX + iconWidth > rcClient.right - 5) {
                 // Not enough space - this icon will be hidden
                 break;
             }
-
+            
             // Store position for click detection
             g_trayIcons[i].x = currentTrayX;
             g_trayIcons[i].y = trayY;
             // Width is already set in AddCommonTrayIcons
             g_trayIcons[i].height = g_trayIconSize;
-
+            
             // Draw icon
             if (g_trayIcons[i].name == L"Clock") {
                 // Special handling for clock (draw text) - use actual width
                 DrawTrayTime(&g, currentTrayX, trayY, g_trayIcons[i].width, g_trayIconSize);
             } else if (g_trayIcons[i].hIcon) {
                 // Draw actual icon
-                DrawIconEx(hdcMem, currentTrayX, trayY, g_trayIcons[i].hIcon,
+                DrawIconEx(hdcMem, currentTrayX, trayY, g_trayIcons[i].hIcon, 
                           g_trayIconSize, g_trayIconSize, 0, NULL, DI_NORMAL);
             } else {
                 // Fallback: draw colored rectangle with app initial
@@ -2028,82 +2022,82 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     Gdiplus::Color(200, 231, 76, 60),
                     Gdiplus::Color(200, 155, 89, 182)
                 };
-
+                
                 Gdiplus::SolidBrush iconBgBrush(colors[i % 5]);
                 g.FillRectangle(&iconBgBrush, currentTrayX, trayY, g_trayIconSize, g_trayIconSize);
-
+                
                 // Draw first letter of app name
                 if (!g_trayIcons[i].name.empty()) {
                     Gdiplus::FontFamily fontFamily(L"Segoe UI");
                     Gdiplus::Font iconFont(&fontFamily, 10, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
                     Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, 255, 255, 255));
-
+                    
                     wchar_t firstChar = g_trayIcons[i].name[0];
                     wchar_t charStr[2] = { firstChar, 0 };
-
+                    
                     Gdiplus::RectF textRect(currentTrayX, trayY, g_trayIconSize, g_trayIconSize);
                     Gdiplus::StringFormat format;
                     format.SetAlignment(Gdiplus::StringAlignmentCenter);
                     format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-
+                    
                     g.DrawString(charStr, 1, &iconFont, textRect, &format, &textBrush);
                 }
             }
-
+            
             // Draw subtle border (but not for clock)
             if (g_trayIcons[i].name != L"Clock") {
                 Gdiplus::Pen iconBorderPen(Gdiplus::Color(80, 180, 180, 180), 0.5f);
                 g.DrawRectangle(&iconBorderPen, currentTrayX, trayY, g_trayIconSize, g_trayIconSize);
             }
-
+            
             // Advance by the icon's actual width plus spacing
             currentTrayX += g_trayIcons[i].width + g_trayIconSpacing;
         }
-
+        
         // Draw chevron (v) for hidden icons if needed
         if (currentTrayX + g_trayIconSize > rcClient.right - 5) {
             g_hasHiddenIcons = true;
             g_chevronX = rcClient.right - g_chevronSize - 5;
             g_chevronY = (rcClient.bottom - g_chevronSize) / 2;
-
+            
             // Draw chevron background (slightly darker than taskbar)
             BYTE r = (std::max)(0, (int)GetRValue(g_taskbarColor) - 20);
             BYTE g_val = (std::max)(0, (int)GetGValue(g_taskbarColor) - 20);
             BYTE b = (std::max)(0, (int)GetBValue(g_taskbarColor) - 20);
             Gdiplus::SolidBrush chevronBgBrush(Gdiplus::Color(150, r, g_val, b));
             g.FillRectangle(&chevronBgBrush, g_chevronX, g_chevronY, g_chevronSize, g_chevronSize);
-
+            
             // Draw chevron arrow (v)
             Gdiplus::FontFamily chevronFontFamily(L"Segoe UI Symbol");
             Gdiplus::Font chevronFont(&chevronFontFamily, 14, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
             Gdiplus::SolidBrush chevronBrush(Gdiplus::Color(255, 200, 200, 200));
-
+            
             Gdiplus::RectF chevronRect(g_chevronX, g_chevronY, g_chevronSize, g_chevronSize);
             Gdiplus::StringFormat chevronFormat;
             chevronFormat.SetAlignment(Gdiplus::StringAlignmentCenter);
             chevronFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-
+            
             g.DrawString(L"▼", -1, &chevronFont, chevronRect, &chevronFormat, &chevronBrush);
         } else {
             g_hasHiddenIcons = false;
         }
-
+        
         // Draw system info on right-most side (optional)
         /*
         SYSTEMTIME st;
         GetLocalTime(&st);
         wchar_t timeStr[64];
         wsprintfW(timeStr, L"%02d:%02d", st.wHour, st.wMinute);
-
+        
         Gdiplus::FontFamily timeFontFamily(L"Segoe UI");
         Gdiplus::Font timeFont(&timeFontFamily, 11, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
         Gdiplus::SolidBrush timeBrush(Gdiplus::Color(255, 220, 220, 220));
-
+        
         Gdiplus::RectF timeRect(rcClient.right - 80, trayY, 75, g_trayIconSize);
         Gdiplus::StringFormat timeFormat;
         timeFormat.SetAlignment(Gdiplus::StringAlignmentFar);
         timeFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-
+        
         g.DrawString(timeStr, -1, &timeFont, timeRect, &timeFormat, &timeBrush);
         */
 
@@ -2124,7 +2118,7 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         for (size_t i = 0; i < g_trayIcons.size(); ++i) {
             if (clickX >= g_trayIcons[i].x && clickX < g_trayIcons[i].x + g_trayIcons[i].width &&
                 clickY >= g_trayIcons[i].y && clickY < g_trayIcons[i].y + g_trayIcons[i].height) {
-
+                
                 HandleTrayIconClick(i, true); // Right click
                 return 0;
             }
@@ -2183,7 +2177,7 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         for (size_t i = 0; i < g_trayIcons.size(); ++i) {
             if (clickX >= g_trayIcons[i].x && clickX < g_trayIcons[i].x + g_trayIcons[i].width &&
                 clickY >= g_trayIcons[i].y && clickY < g_trayIcons[i].y + g_trayIcons[i].height) {
-
+                
                 HandleTrayIconClick(i, false); // Left click
                 return 0;
             }
@@ -2196,7 +2190,7 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             // Show hidden tray icons popup menu
             HMENU hMenu = CreatePopupMenu();
-
+            
             // Find which icons are hidden (index where we stopped drawing)
             int lastVisibleIndex = -1;
             for (size_t i = 0; i < g_trayIcons.size(); ++i) {
@@ -2205,21 +2199,21 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     break;
                 }
             }
-
+            
             if (lastVisibleIndex >= 0 && lastVisibleIndex < (int)g_trayIcons.size() - 1) {
                 // Add hidden icons to menu
                 for (size_t i = lastVisibleIndex + 1; i < g_trayIcons.size(); ++i) {
                     std::wstring menuText = g_trayIcons[i].name;
                     if (menuText.empty()) menuText = L"Icon " + std::to_wstring(i);
-
+                    
                     AppendMenuW(hMenu, MF_STRING, 51000 + i, menuText.c_str());
                 }
-
+                
                 POINT pt;
                 GetCursorPos(&pt);
-
+                
                 int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, NULL);
-
+                
                 if (cmd >= 51000 && cmd < 51000 + (int)g_trayIcons.size()) {
                     int idx = cmd - 51000;
                     if (idx >= 0 && idx < (int)g_trayIcons.size()) {
@@ -2227,7 +2221,7 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     }
                 }
             }
-
+            
             DestroyMenu(hMenu);
             return 0;
         }
@@ -2357,9 +2351,29 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             InvalidateRect(hwnd, NULL, FALSE);
         }
 
+        // Keep taskbar on top of normal windows (but not topmost)
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+        // Continuously re-apply work area to force Windows to respect it
+        static int workAreaCounter = 0;
+        if (++workAreaCounter % 4 == 0) { // Every 2 seconds (500ms * 4)
+            int screenW = GetSystemMetrics(SM_CXSCREEN);
+            int screenH = GetSystemMetrics(SM_CYSCREEN);
+            RECT workArea;
+            workArea.left = 0;
+            workArea.top = 0;
+            workArea.right = screenW;
+            workArea.bottom = screenH - g_taskbarHeight;
+            SystemParametersInfoW(SPI_SETWORKAREA, 0, &workArea, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
+            
+            // Broadcast WM_SETTINGCHANGE to all windows
+            SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETWORKAREA, 
+                              (LPARAM)L"WorkArea", SMTO_ABORTIFHUNG, 100, NULL);
+        }
+
         // Update running apps list
         UpdateRunningAppsList();
-
+        
         // Periodically refresh tray icons (every 5 seconds)
         static DWORD lastTrayUpdate = 0;
         DWORD currentTime = GetTickCount();
@@ -2378,7 +2392,13 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         {
             case ABN_FULLSCREENAPP:
                 // A fullscreen app opened or closed
-                // Could hide/show taskbar here if desired
+                if (lParam) {
+                    // Fullscreen app is opening - hide taskbar
+                    ShowWindow(hwnd, SW_HIDE);
+                } else {
+                    // Fullscreen app closed - show taskbar
+                    ShowWindow(hwnd, SW_SHOW);
+                }
                 break;
             case ABN_POSCHANGED:
                 SetAppBarPos(hwnd);
@@ -2704,7 +2724,7 @@ LRESULT CALLBACK StartMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         if (clickX < sidebarWidth) {
             RECT rcClient;
             GetClientRect(hwnd, &rcClient);
-
+            
             // Check if clicking on power buttons
             int powerButtonY = rcClient.bottom - 60;
             int powerButtonWidth = 100;
@@ -2953,7 +2973,7 @@ void DestroyTaskbar() {
         // Destroy the window
         DestroyWindow(g_hTaskbarWnd);
         g_hTaskbarWnd = NULL;
-
+        
         // Resize desktop to take full screen
         ResizeShellWindows();
     }
@@ -2973,20 +2993,20 @@ void RecreateTaskbar() {
             g_hInst,
             NULL
         );
-
+        
         if (g_hTaskbarWnd) {
             // Restore timer
             SetTimer(g_hTaskbarWnd, 1, 500, NULL);
-
+            
             // Normal z-order - games can go on top
             SetWindowPos(g_hTaskbarWnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-
+            
             // Resize to proper position
             ResizeShellWindows();
-
+            
             // Show the taskbar
             ShowWindow(g_hTaskbarWnd, SW_SHOW);
-
+            
             // Force redraw
             InvalidateRect(g_hTaskbarWnd, NULL, TRUE);
         }
@@ -3002,7 +3022,7 @@ void ResizeShellWindows(int dpi) {
     // Desktop full width - adjust based on taskbar visibility
     if (g_hTaskbarWnd && IsWindow(g_hTaskbarWnd)) {
         SetWindowPos(g_hDesktopWnd, HWND_BOTTOM, 0, 0, w, h - tb, SWP_NOACTIVATE);
-
+        
         // Taskbar at bottom - normal z-order so games can cover it
         SetWindowPos(g_hTaskbarWnd, HWND_BOTTOM, 0, h - tb, w, tb, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     } else {
@@ -3021,28 +3041,28 @@ void ResizeShellWindows(int dpi) {
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pKeyboard = (KBDLLHOOKSTRUCT*)lParam;
-
+        
         // Check for Windows key (left or right)
         if (pKeyboard->vkCode == VK_LWIN || pKeyboard->vkCode == VK_RWIN) {
             if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
                 // Only trigger on key down, not repeat
                 if (!g_winKeyPressed) {
                     g_winKeyPressed = true;
-
+                    
                     // Toggle taskbar and start menu
                     bool startMenuCurrentlyVisible = IsWindowVisible(g_hStartMenuWnd);
-
+                    
                     if (!startMenuCurrentlyVisible) {
                         // Opening start menu - save current taskbar state and show both
                         g_taskbarVisibleBeforeWinKey = g_taskbarVisible;
-
+                        
                         // Make sure taskbar is visible and on top
                         if (!g_taskbarVisible) {
                             RecreateTaskbar();
                             g_taskbarVisible = true;
                         }
                         SetWindowPos(g_hTaskbarWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-
+                        
                         // Show start menu
                         ShowWindow(g_hStartMenuWnd, SW_SHOW);
                         SetForegroundWindow(g_hStartMenuWnd);
@@ -3050,10 +3070,10 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                     } else {
                         // Closing start menu - restore taskbar to previous state
                         ShowWindow(g_hStartMenuWnd, SW_HIDE);
-
+                        
                         // Restore taskbar z-order to normal (not topmost)
                         SetWindowPos(g_hTaskbarWnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-
+                        
                         // Restore taskbar visibility to state before Windows key was pressed
                         if (!g_taskbarVisibleBeforeWinKey && g_taskbarVisible) {
                             DestroyTaskbar();
@@ -3061,7 +3081,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                         }
                         g_startMenuOpenedByWinKey = false;
                     }
-
+                    
                     // Block the Windows key from reaching Windows
                     return 1;
                 }
@@ -3071,7 +3091,7 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             }
         }
     }
-
+    
     return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
 }
 
@@ -3106,6 +3126,17 @@ void SetAppBarPos(HWND hwnd)
         abd.rc.right - abd.rc.left,
         abd.rc.bottom - abd.rc.top,
         TRUE);
+    
+    // Also manually set the work area
+    RECT workArea;
+    workArea.left = 0;
+    workArea.top = 0;
+    workArea.right = abd.rc.right;
+    workArea.bottom = abd.rc.top; // Top of taskbar = bottom of work area
+    SystemParametersInfoW(SPI_SETWORKAREA, 0, &workArea, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
+    
+    // Broadcast the change to all top-level windows
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETWORKAREA, 0, SMTO_ABORTIFHUNG, 1000, NULL);
 }
 
 // Unregister AppBar
@@ -3115,6 +3146,12 @@ void UnregisterAppBar(HWND hwnd)
     abd.cbSize = sizeof(APPBARDATA);
     abd.hWnd = hwnd;
     SHAppBarMessage(ABM_REMOVE, &abd);
+    
+    // Restore work area to full screen
+    int w = GetSystemMetrics(SM_CXSCREEN);
+    int h = GetSystemMetrics(SM_CYSCREEN);
+    RECT workArea = {0, 0, w, h};
+    SystemParametersInfoW(SPI_SETWORKAREA, 0, &workArea, SPIF_SENDCHANGE);
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
@@ -3194,18 +3231,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         hInstance,
         NULL
     );
-
+    
     // Store the real DesktopWndProc address for safe restoration
     g_realDesktopProc = (WNDPROC)GetWindowLongPtrW(g_hDesktopWnd, GWLP_WNDPROC);
 
-    // FIXED: Taskbar as normal window (not topmost)
+    // Taskbar as normal window (can be covered by fullscreen apps)
     g_hTaskbarWnd = CreateWindowEx(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         L"CustomTaskbarClass",
         L"Taskbar",
-        WS_POPUP,  // NO WS_CHILD
+        WS_POPUP,
         0,0,0,0,
-        NULL,  // NO parent
+        NULL,
         NULL,
         hInstance,
         NULL
@@ -3253,7 +3290,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
     // Load taskbar configuration and icons
     LoadTaskbarConfig();
     PopulateTaskbarIcons();
-
+    
     // Initialize system tray icons
     PopulateRealTrayIcons();
 
@@ -3295,7 +3332,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
 
     UnregisterHotKey(NULL, 9001);
     UnregisterHotKey(NULL, 9002); // Unregister Ctrl+Alt+T hotkey
-
+    
     // Unhook keyboard hook
     if (g_keyboardHook) {
         UnhookWindowsHookEx(g_keyboardHook);
@@ -3320,7 +3357,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         }
     }
     g_trayIcons.clear();
-
+    
     for (auto& icon : g_realTrayIcons) {
         if (icon.hIcon) {
             DestroyIcon(icon.hIcon);
@@ -3381,7 +3418,7 @@ void ShowShellContextMenu(HWND hwnd, POINT pt, LPCWSTR pszPath) {
 
                 g_pcm2 = pcm2;
                 g_pcm3 = pcm3;
-
+                
                 // Only subclass if not already subclassed
                 WNDPROC currentProc = (WNDPROC)GetWindowLongPtrW(hwnd, GWLP_WNDPROC);
                 if (currentProc != Desktop_SubclassProc) {
@@ -3518,13 +3555,13 @@ void ShowDesktopContextMenu(HWND hwnd, POINT pt) {
                             // Choose color for taskbar
                             CHOOSECOLORW cc = {};
                             static COLORREF customColors[16] = {0};
-
+                            
                             cc.lStructSize = sizeof(cc);
                             cc.hwndOwner = hwnd;
                             cc.lpCustColors = customColors;
                             cc.rgbResult = g_taskbarColor;
                             cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-
+                            
                             if (ChooseColorW(&cc)) {
                                 g_taskbarColor = cc.rgbResult;
                                 SaveTaskbarConfig();
@@ -3534,13 +3571,13 @@ void ShowDesktopContextMenu(HWND hwnd, POINT pt) {
                             // Choose color for start menu
                             CHOOSECOLORW cc = {};
                             static COLORREF customColors2[16] = {0};
-
+                            
                             cc.lStructSize = sizeof(cc);
                             cc.hwndOwner = hwnd;
                             cc.lpCustColors = customColors2;
                             cc.rgbResult = g_startMenuColor;
                             cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-
+                            
                             if (ChooseColorW(&cc)) {
                                 g_startMenuColor = cc.rgbResult;
                                 SaveTaskbarConfig();
@@ -3550,7 +3587,7 @@ void ShowDesktopContextMenu(HWND hwnd, POINT pt) {
                             // Open file dialog to select background image
                             OPENFILENAMEW ofn = {};
                             wchar_t szFile[MAX_PATH] = L"";
-
+                            
                             ofn.lStructSize = sizeof(ofn);
                             ofn.hwndOwner = hwnd;
                             ofn.lpstrFile = szFile;
@@ -3559,14 +3596,14 @@ void ShowDesktopContextMenu(HWND hwnd, POINT pt) {
                             ofn.nFilterIndex = 1;
                             ofn.lpstrTitle = L"Select Background Image";
                             ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
+                            
                             if (GetOpenFileNameW(&ofn)) {
                                 // Load the new background image
                                 if (g_backgroundImage) {
                                     delete g_backgroundImage;
                                     g_backgroundImage = NULL;
                                 }
-
+                                
                                 g_backgroundImage = Gdiplus::Bitmap::FromFile(szFile);
                                 if (g_backgroundImage && g_backgroundImage->GetLastStatus() == Gdiplus::Ok) {
                                     g_backgroundPath = szFile;
