@@ -68,6 +68,8 @@ static COLORREF g_startMenuColor = RGB(50, 100, 160); // Default blue
 #define IDM_ITEM_OPEN 40001
 #define IDM_ITEM_PROPERTIES 40002
 #define IDM_DESKTOP_REFRESH 40003
+#define IDM_RESTART_SHELL 40005
+#define IDM_ITEM_RENAME 40006
 
 // New command IDs
 #define IDM_VIEW_LARGE        50001
@@ -2322,6 +2324,8 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         HMENU hMenu = CreatePopupMenu();
         AppendMenuW(hMenu, MF_STRING, 40010, L"Pin another app to taskbar");
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hMenu, MF_STRING, IDM_RESTART_SHELL, L"Restart Shell");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
         for (size_t i = 0; i < g_taskbarIcons.size() && i < 10; ++i) {
             if (g_taskbarIcons[i].visible &&
@@ -2358,6 +2362,11 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         } else if (cmd == 40010) {
             ShowWindow(g_hStartMenuWnd, IsWindowVisible(g_hStartMenuWnd) ? SW_HIDE : SW_SHOW);
+        } else if (cmd == IDM_RESTART_SHELL) {
+            wchar_t exePath[MAX_PATH];
+            GetModuleFileNameW(NULL, exePath, MAX_PATH);
+            ShellExecuteW(NULL, L"open", exePath, NULL, NULL, SW_SHOW);
+            PostQuitMessage(0);
         }
 
         DestroyMenu(hMenu);
@@ -3431,10 +3440,20 @@ static void ForceFocusToDesktop()
 
     SetForegroundWindow(g_hDesktopWnd);
     SetActiveWindow(g_hDesktopWnd);
-    BringWindowToTop(g_hDesktopWnd);
 
     if (fgThread && fgThread != ourThread)
         AttachThreadInput(ourThread, fgThread, FALSE);
+}
+
+// Keep g_hDesktopWnd just above g_hWeWorkerW — never above real app windows.
+static void PinDesktopToWorkerW()
+{
+    if (g_hDesktopWnd && g_hWeWorkerW &&
+        IsWindow(g_hDesktopWnd) && IsWindow(g_hWeWorkerW))
+    {
+        SetWindowPos(g_hDesktopWnd, g_hWeWorkerW, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+    }
 }
 
 void CALLBACK WinEventProc(HWINEVENTHOOK hHook, DWORD event, HWND hwnd,
@@ -3456,6 +3475,8 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hHook, DWORD event, HWND hwnd,
     }
     else if (event == EVENT_SYSTEM_FOREGROUND) {
         if (!hwnd || !g_hWeWorkerW || !g_hDesktopWnd) return;
+        // Re-pin desktop below all app windows on every foreground change
+        PinDesktopToWorkerW();
         // Already where we want to be — nothing to do
         if (hwnd == g_hDesktopWnd) return;
         // If the wallpaper WorkerW somehow grabbed focus, steal it back
@@ -3465,9 +3486,8 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hHook, DWORD event, HWND hwnd,
             ForceFocusToDesktop();
     }
     else if (event == EVENT_SYSTEM_MINIMIZEEND) {
-        // Minimize animation just finished. If focus fell to g_hWeWorkerW
-        // (or nothing) because the last visible window was minimized, fix it.
         if (g_hDesktopWnd && IsWindow(g_hDesktopWnd)) {
+            PinDesktopToWorkerW();
             HWND fg = GetForegroundWindow();
             if (!fg || fg == g_hWeWorkerW ||
                 GetParent(fg) == g_hWeWorkerW ||
@@ -3663,13 +3683,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
     );
 
-    // --- Step 5: Icon layer — top-level, WS_EX_LAYERED with per-pixel alpha ---
-    // UpdateLayeredWindow lets us paint a 32-bit ARGB bitmap where alpha=0 means
-    // fully transparent (WE shows through) and alpha=255 means fully opaque.
-    // This is how all real desktop overlays work. Non-topmost so apps stay on top.
+    // --- Step 5: Icon layer — top-level WS_EX_LAYERED with per-pixel alpha ---
     g_hDesktopWnd = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOOLWINDOW,
-        L"WorkerW", L"",
+        WS_EX_LAYERED | WS_EX_APPWINDOW,
+        L"WorkerW", L"Desktop",
         WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
         0, 0, screenW, screenH - g_taskbarHeight,
         NULL, NULL, hInstance, NULL
@@ -3678,7 +3695,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
         MessageBoxW(NULL, L"Could not create desktop icon layer!", L"Error", MB_OK | MB_ICONERROR);
         return 1;
     }
-    // Place directly above WE's WorkerW
+    // Pin just above WE's WorkerW — below all real app windows
     SetWindowPos(g_hDesktopWnd, g_hWeWorkerW, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     
     g_realDesktopProc = NULL; // We created it, not subclassing
@@ -3895,6 +3912,7 @@ void ShowShellContextMenu(HWND hwnd, POINT pt, LPCWSTR pszPath) {
                         int count = GetMenuItemCount(hMenu);
                         UINT refreshId = (UINT)(baseId + count);
                         InsertMenuW(hMenu, -1, MF_BYPOSITION, refreshId, L"Refresh");
+                        InsertMenuW(hMenu, -1, MF_BYPOSITION, IDM_ITEM_RENAME, L"Rename");
 
                         ReleaseCapture();
                         SetForegroundWindow(hwnd);
@@ -3903,6 +3921,51 @@ void ShowShellContextMenu(HWND hwnd, POINT pt, LPCWSTR pszPath) {
                             if ((UINT)id == refreshId) {
                                 PopulateDesktopIcons();
                                 InvalidateRect(hwnd, NULL, TRUE);
+                            } else if ((UINT)id == IDM_ITEM_RENAME) {
+                                std::wstring oldPath = pszPath;
+                                size_t slash = oldPath.find_last_of(L"\\/");
+                                std::wstring dir = (slash != std::wstring::npos) ? oldPath.substr(0, slash) : L"";
+                                std::wstring oldName = (slash != std::wstring::npos) ? oldPath.substr(slash + 1) : oldPath;
+                                wchar_t newName[MAX_PATH];
+                                wcsncpy_s(newName, oldName.c_str(), _TRUNCATE);
+
+                                std::wstring prompt = L"Rename \"" + oldName + L"\" to:";
+                                HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+                                    L"#32770", L"Rename",
+                                    WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                                    0, 0, 360, 120, hwnd, NULL, g_hInst, NULL);
+                                if (hDlg) {
+                                    CreateWindowExW(0, L"STATIC", prompt.c_str(), WS_CHILD | WS_VISIBLE | SS_LEFT, 10, 10, 340, 20, hDlg, NULL, g_hInst, NULL);
+                                    HWND hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", newName, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 10, 36, 340, 24, hDlg, (HMENU)1001, g_hInst, NULL);
+                                    CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 130, 72, 80, 28, hDlg, (HMENU)IDOK, g_hInst, NULL);
+                                    CreateWindowExW(0, L"BUTTON", L"Cancel", WS_CHILD | WS_VISIBLE, 220, 72, 80, 28, hDlg, (HMENU)IDCANCEL, g_hInst, NULL);
+                                    HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+                                    EnumChildWindows(hDlg, [](HWND h, LPARAM lp) -> BOOL { SendMessageW(h, WM_SETFONT, lp, TRUE); return TRUE; }, (LPARAM)hFont);
+                                    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+                                    RECT rc; GetWindowRect(hDlg, &rc);
+                                    SetWindowPos(hDlg, HWND_TOP, (sw-(rc.right-rc.left))/2, (sh-(rc.bottom-rc.top))/2, 0, 0, SWP_NOSIZE);
+                                    ShowWindow(hDlg, SW_SHOW);
+                                    SetForegroundWindow(hDlg);
+                                    SetFocus(hEdit);
+                                    SendMessageW(hEdit, EM_SETSEL, 0, -1);
+                                    MSG msgR; bool accepted = false;
+                                    while (IsWindow(hDlg) && GetMessageW(&msgR, NULL, 0, 0)) {
+                                        if (msgR.message == WM_KEYDOWN && msgR.wParam == VK_RETURN) { GetWindowTextW(hEdit, newName, MAX_PATH); accepted = true; DestroyWindow(hDlg); break; }
+                                        if (msgR.message == WM_KEYDOWN && msgR.wParam == VK_ESCAPE) { DestroyWindow(hDlg); break; }
+                                        if (msgR.message == WM_COMMAND) {
+                                            if (LOWORD(msgR.wParam) == IDOK) { GetWindowTextW(hEdit, newName, MAX_PATH); accepted = true; DestroyWindow(hDlg); break; }
+                                            if (LOWORD(msgR.wParam) == IDCANCEL) { DestroyWindow(hDlg); break; }
+                                        }
+                                        TranslateMessage(&msgR); DispatchMessageW(&msgR);
+                                    }
+                                    if (accepted && wcslen(newName) > 0 && _wcsicmp(newName, oldName.c_str()) != 0) {
+                                        std::wstring newPath = dir + L"\\" + newName;
+                                        if (!MoveFileW(oldPath.c_str(), newPath.c_str()))
+                                            MessageBoxW(hwnd, L"Rename failed.", L"Error", MB_OK | MB_ICONERROR);
+                                        PopulateDesktopIcons();
+                                        InvalidateRect(hwnd, NULL, TRUE);
+                                    }
+                                }
                             } else {
                                 CMINVOKECOMMANDINFOEX ici = {};
                                 ici.cbSize = sizeof(ici);
@@ -3960,6 +4023,7 @@ void ShowDesktopContextMenu(HWND hwnd, POINT pt) {
 
                     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
                     AppendMenuW(hMenu, MF_STRING, IDM_DESKTOP_REFRESH, L"Refresh");
+                    AppendMenuW(hMenu, MF_STRING, IDM_RESTART_SHELL, L"Restart Shell");
 
                     HMENU hView = CreatePopupMenu();
                     AppendMenuW(hView, MF_STRING | (g_viewMode == 2 ? MF_CHECKED : 0), IDM_VIEW_LARGE, L"Large icons");
@@ -3991,6 +4055,11 @@ void ShowDesktopContextMenu(HWND hwnd, POINT pt) {
                             PopulateDesktopIcons();
                             ResetDesktopPositions();
                             InvalidateRect(hwnd, NULL, TRUE);
+                        } else if (cmd == IDM_RESTART_SHELL) {
+                            wchar_t exePath[MAX_PATH];
+                            GetModuleFileNameW(NULL, exePath, MAX_PATH);
+                            ShellExecuteW(NULL, L"open", exePath, NULL, NULL, SW_SHOW);
+                            PostQuitMessage(0);
                         } else if (cmd == IDM_VIEW_LARGE) {
                             UpdateViewMode(2);
                         } else if (cmd == IDM_VIEW_MEDIUM) {
