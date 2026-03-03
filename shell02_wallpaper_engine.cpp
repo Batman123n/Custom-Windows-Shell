@@ -209,6 +209,35 @@ static std::vector<int> g_hiddenIconIndices; // Indices of hidden real icons
 
 // ==================== HELPER FUNCTIONS ====================
 
+// Gets a properly sized icon using SHGetImageList — no pixelation.
+// Uses SHIL_EXTRALARGE (48x48) or SHIL_JUMBO (256x256) instead of the
+// blurry 32x32 that SHGetFileInfo+SHGFI_LARGEICON returns.
+// Caller is responsible for DestroyIcon().
+// MinGW doesn't fully declare IImageList — define the GUID manually.
+// {46EB5926-582E-4017-9FDF-E8998DAA0950}
+static const GUID CLSID_IImageList = {
+  0x46eb5926, 0x582e, 0x4017,
+  { 0x9f, 0xdf, 0xe8, 0x99, 0x8d, 0xaa, 0x09, 0x50 }
+};
+
+static HICON GetIconForPath(const std::wstring &path, int size) {
+  int shil = SHIL_LARGE;                   // 32x32
+  if (size >= 48)  shil = SHIL_EXTRALARGE; // 48x48
+  if (size >= 256) shil = SHIL_JUMBO;      // 256x256
+
+  SHFILEINFOW sfi = {};
+  if (!SHGetFileInfoW(path.c_str(), 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX))
+    return NULL;
+
+  // Use HIMAGELIST + ImageList_GetIcon to avoid MinGW's incomplete IImageList
+  HIMAGELIST hil = NULL;
+  if (FAILED(SHGetImageList(shil, CLSID_IImageList, (void **)&hil)) || !hil)
+    return NULL;
+
+  HICON hIcon = ImageList_GetIcon(hil, sfi.iIcon, ILD_TRANSPARENT);
+  return hIcon;
+}
+
 // Returns true if the given file path should be blocked from appearing in the
 // taskbar, start menu, or being launched. Centralises the previously duplicated
 // explorer/shell filtering that was copy-pasted 5+ times across the codebase.
@@ -1084,10 +1113,7 @@ void PopulateTaskbarIcons() {
 
       // Extract icon from .lnk file
       SHFILEINFOW sfi = {};
-      if (SHGetFileInfoW(appPath.c_str(), 0, &sfi, sizeof(sfi),
-                         SHGFI_ICON | SHGFI_LARGEICON)) {
-        tIcon.hIcon = sfi.hIcon;
-      }
+      tIcon.hIcon = GetIconForPath(appPath, 48);
 
       g_taskbarIcons.push_back(tIcon);
     }
@@ -1290,12 +1316,7 @@ void UpdateRunningAppsList() {
               app.displayName = title;
 
               SHFILEINFOW sfi = {};
-              if (SHGetFileInfoW(exePath, 0, &sfi, sizeof(sfi),
-                                 SHGFI_ICON | SHGFI_SMALLICON)) {
-                app.hIcon = sfi.hIcon;
-              } else {
-                app.hIcon = NULL;
-              }
+              app.hIcon = GetIconForPath(exePath, 48);
 
               g_runningApps.push_back(app);
               g_windowMinimizedState[hwnd] = IsIconic(hwnd);
@@ -1508,11 +1529,14 @@ void PopulateDesktopIcons() {
           std::wstring fullPath = desktopDir + L"\\" + findData.cFileName;
 
           if (SHGetFileInfoW(fullPath.c_str(), 0, &sfi, sizeof(sfi),
-                             SHGFI_DISPLAYNAME | SHGFI_ICON |
-                                 SHGFI_LARGEICON)) {
+                             SHGFI_DISPLAYNAME)) {
             wcsncpy_s(item.name, MAX_PATH, sfi.szDisplayName, _TRUNCATE);
-            wcsncpy_s(item.path, MAX_PATH, fullPath.c_str(), _TRUNCATE);
-            item.hIcon = sfi.hIcon;
+          } else {
+            wcsncpy_s(item.name, MAX_PATH, findData.cFileName, _TRUNCATE);
+          }
+          wcsncpy_s(item.path, MAX_PATH, fullPath.c_str(), _TRUNCATE);
+          item.hIcon = GetIconForPath(fullPath, 48);
+          if (item.hIcon) {
 
             WIN32_FILE_ATTRIBUTE_DATA fad = {};
             if (GetFileAttributesExW(fullPath.c_str(), GetFileExInfoStandard,
@@ -2847,13 +2871,7 @@ LRESULT CALLBACK StartMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam,
       info.height = 32;
       g_sidebarItems.push_back(info);
 
-      HICON hIcon = NULL;
-      SHFILEINFOW sfi = {};
-      DWORD flags =
-          SHGFI_ICON | (std::get<1>(item) ? SHGFI_SMALLICON : SHGFI_LARGEICON);
-      if (SHGetFileInfoW(fullPath.c_str(), 0, &sfi, sizeof(sfi), flags)) {
-        hIcon = sfi.hIcon;
-      }
+      HICON hIcon = GetIconForPath(fullPath, 48);
 
       if (hIcon) {
         DrawIconWithGDIPlus(&g, hIcon, 10, sidebarY, std::get<1>(item) ? 20 : 24);
@@ -2973,12 +2991,7 @@ LRESULT CALLBACK StartMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam,
       Gdiplus::Pen borderPen(Gdiplus::Color(100, 150, 200, 250), 1);
       g.DrawRectangle(&borderPen, tileRect);
 
-      HICON hIcon = NULL;
-      SHFILEINFOW sfi = {};
-      if (SHGetFileInfoW(g_pinnedApps[i].c_str(), 0, &sfi, sizeof(sfi),
-                         SHGFI_ICON | SHGFI_LARGEICON)) {
-        hIcon = sfi.hIcon;
-      }
+      HICON hIcon = GetIconForPath(g_pinnedApps[i], 48);
 
       if (hIcon) {
         DrawIconWithGDIPlus(&g, hIcon, tileX + 10, tileRectY + 10, 60);
