@@ -3412,7 +3412,7 @@ void ResizeShellWindows(int dpi) {
   int smY = 50;
   int smH = h - (g_hTaskbarWnd && IsWindow(g_hTaskbarWnd) ? tb : 0) - smY;
   SetWindowPos(g_hStartMenuWnd, HWND_TOPMOST, 0, smY, smW, smH,
-               SWP_NOACTIVATE | SWP_NOZORDER);
+               SWP_NOACTIVATE);
 }
 
 // ==================== TOPMOST HELPERS ====================
@@ -3449,10 +3449,8 @@ static void RestoreShellZOrder() {
     SetWindowPos(g_hStartMenuWnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
   }
-  if (g_hTaskbarWnd && IsWindow(g_hTaskbarWnd)) {
-    SetWindowPos(g_hTaskbarWnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  }
+  // Taskbar stays HWND_TOPMOST always — demoting it lets overlay apps
+  // (Discord, game overlays, etc.) permanently cover it.
 }
 
 // Low-level keyboard hook to capture Windows key
@@ -3636,6 +3634,13 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hHook, DWORD event, HWND hwnd,
       return;
     // Re-pin desktop below all app windows on every foreground change
     PinDesktopToWorkerW();
+    // If taskbar got hidden by a fullscreen app that's now gone, restore it
+    if (g_hTaskbarWnd && IsWindow(g_hTaskbarWnd) &&
+        !IsWindowVisible(g_hTaskbarWnd)) {
+      ShowWindow(g_hTaskbarWnd, SW_SHOW);
+      SetWindowPos(g_hTaskbarWnd, HWND_TOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
     // Already where we want to be — nothing to do
     if (hwnd == g_hDesktopWnd)
       return;
@@ -3883,6 +3888,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
   while (GetMessage(&msg, NULL, 0, 0)) {
     if (msg.message == WM_HOTKEY && msg.wParam == 9001) {
       LaunchExplorer();
+      continue;
     } else if (msg.message == WM_HOTKEY && msg.wParam == 9002) {
       // Toggle taskbar by destroying/recreating it
       g_taskbarVisible = !g_taskbarVisible;
@@ -3891,6 +3897,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
       } else {
         DestroyTaskbar();
       }
+      continue;
     }
     TranslateMessage(&msg);
     DispatchMessage(&msg);
@@ -4076,7 +4083,7 @@ void ShowShellContextMenu(HWND hwnd, POINT pt, LPCWSTR pszPath) {
                   SendMessageW(hEdit, EM_SETSEL, 0, -1);
                   MSG msgR;
                   bool accepted = false;
-                  while (IsWindow(hDlg) && GetMessageW(&msgR, NULL, 0, 0)) {
+                  while (IsWindow(hDlg) && GetMessageW(&msgR, hDlg, 0, 0)) {
                     if (msgR.message == WM_KEYDOWN &&
                         msgR.wParam == VK_RETURN) {
                       GetWindowTextW(hEdit, newName, MAX_PATH);
