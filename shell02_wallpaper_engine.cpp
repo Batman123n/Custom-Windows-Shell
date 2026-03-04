@@ -60,6 +60,7 @@ bool g_taskbarVisibleBeforeWinKey =
     true; // Track taskbar state before Windows key press
 bool g_startMenuOpenedByWinKey =
     false; // Track if start menu was opened by Windows key
+static bool g_fullscreenActive = false; // Track if a fullscreen app is running
 
 // Keyboard hook for Windows key
 static HHOOK g_keyboardHook = NULL;
@@ -2137,6 +2138,39 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam,
   return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
+// Returns true if the given window covers the entire screen (real fullscreen).
+// Used to reliably detect fullscreen apps since ABN_FULLSCREENAPP is flaky
+// for browsers (YouTube) and some games.
+static bool IsWindowFullscreen(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd))
+    return false;
+
+  RECT wndRect;
+  if (!GetWindowRect(hwnd, &wndRect))
+    return false;
+
+  int sw = GetSystemMetrics(SM_CXSCREEN);
+  int sh = GetSystemMetrics(SM_CYSCREEN);
+
+  return wndRect.left <= 0 && wndRect.top <= 0 &&
+         wndRect.right >= sw && wndRect.bottom >= sh;
+}
+
+// Check if any non-shell window is currently fullscreen.
+static bool AnyWindowFullscreen() {
+  HWND fgWnd = GetForegroundWindow();
+  if (!fgWnd)
+    return false;
+
+  // Ignore our own shell windows
+  if (fgWnd == g_hDesktopWnd || fgWnd == g_hTaskbarWnd ||
+      fgWnd == g_hStartMenuWnd || fgWnd == g_hWeWorkerW ||
+      GetAncestor(fgWnd, GA_ROOTOWNER) == g_hWeWorkerW)
+    return false;
+
+  return IsWindowFullscreen(fgWnd);
+}
+
 LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
                                 LPARAM lParam) {
   switch (msg) {
@@ -2664,6 +2698,24 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
       }
     }
 
+    // Poll for real fullscreen — ABN_FULLSCREENAPP is unreliable for
+    // browsers (YouTube) and some games (CS2). Hide taskbar when a
+    // fullscreen window is detected, restore when it's gone.
+    if (!IsWindowVisible(g_hStartMenuWnd)) {
+      bool nowFullscreen = AnyWindowFullscreen();
+      if (nowFullscreen != g_fullscreenActive) {
+        g_fullscreenActive = nowFullscreen;
+        if (nowFullscreen) {
+          ShowWindow(hwnd, SW_HIDE);
+        } else {
+          ShowWindow(hwnd, SW_SHOW);
+          SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+        needsRepaint = true;
+      }
+    }
+
     if (needsRepaint) {
       InvalidateRect(hwnd, NULL, FALSE);
     }
@@ -2692,24 +2744,24 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
   case APPBAR_CALLBACK: {
     switch (wParam) {
     case ABN_FULLSCREENAPP: {
-      // Check which window is "fullscreen" — if it's WE's render window
-      // or one of our own shell windows, ignore it entirely.
+      // ABN_FULLSCREENAPP is unreliable (browsers/some games skip it).
+      // The 500ms timer polls AnyWindowFullscreen() for reliable detection.
+      // We still handle it here as a fast-path to react immediately.
       HWND fgWnd = GetForegroundWindow();
       HWND fgRoot = GetAncestor(fgWnd, GA_ROOTOWNER);
       bool isOurWindow = (fgWnd == g_hWeWorkerW || fgRoot == g_hWeWorkerW ||
                           fgWnd == g_hDesktopWnd || fgWnd == g_hTaskbarWnd ||
                           fgWnd == g_hStartMenuWnd);
       if (isOurWindow)
-        break; // never hide taskbar for our own windows
-
-      // Never hide while the start menu is open — user explicitly
-      // brought the shell on top and expects it to stay there.
+        break;
       if (IsWindowVisible(g_hStartMenuWnd))
         break;
 
       if (lParam) {
+        g_fullscreenActive = true;
         ShowWindow(hwnd, SW_HIDE);
       } else {
+        g_fullscreenActive = false;
         ShowWindow(hwnd, SW_SHOW);
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -3635,7 +3687,7 @@ void CALLBACK WinEventProc(HWINEVENTHOOK hHook, DWORD event, HWND hwnd,
     // Re-pin desktop below all app windows on every foreground change
     PinDesktopToWorkerW();
     // If taskbar got hidden by a fullscreen app that's now gone, restore it
-    if (g_hTaskbarWnd && IsWindow(g_hTaskbarWnd) &&
+    if (!g_fullscreenActive && g_hTaskbarWnd && IsWindow(g_hTaskbarWnd) &&
         !IsWindowVisible(g_hTaskbarWnd)) {
       ShowWindow(g_hTaskbarWnd, SW_SHOW);
       SetWindowPos(g_hTaskbarWnd, HWND_TOPMOST, 0, 0, 0, 0,
