@@ -25,6 +25,7 @@
 #include <shellapi.h>
 #include <shlguid.h>
 #include <shlobj.h>
+#include <set>
 #include <string>
 #include <tchar.h>
 #include <tlhelp32.h>
@@ -489,6 +490,7 @@ std::wstring GetProcessName(DWORD processId) {
     DWORD pathSize = MAX_PATH;
 
     if (QueryFullProcessImageNameW(hProcess, 0, exePath, &pathSize)) {
+      CloseHandle(hProcess);
       std::wstring pathStr = exePath;
       size_t lastSlash = pathStr.find_last_of(L"\\");
       if (lastSlash != std::wstring::npos) {
@@ -605,24 +607,19 @@ void PopulateRealTrayIcons() {
   }
 }
 
-// Add common system tray icons that are always present
 void AddCommonTrayIcons() {
+  // Load shell32 once for all icon lookups
+  HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
+
   // Volume icon
   {
     TrayIcon ti;
     ti.name = L"Volume";
     ti.isRealIcon = false;
-
-    // Try to get the actual volume icon from Windows
-    HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
-    if (hShell32) {
-      ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(168), IMAGE_ICON,
-                                   g_trayIconSize, g_trayIconSize, LR_SHARED);
-      FreeLibrary(hShell32);
-    }
-    if (!ti.hIcon) {
-      ti.hIcon = NULL; // Will draw colored rect
-    }
+    ti.hIcon = hShell32 ? (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(168),
+                                             IMAGE_ICON, g_trayIconSize,
+                                             g_trayIconSize, LR_SHARED)
+                        : NULL;
     ti.width = g_trayIconSize;
     ti.height = g_trayIconSize;
     g_trayIcons.push_back(ti);
@@ -633,16 +630,10 @@ void AddCommonTrayIcons() {
     TrayIcon ti;
     ti.name = L"Network";
     ti.isRealIcon = false;
-
-    HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
-    if (hShell32) {
-      ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(17), IMAGE_ICON,
-                                   g_trayIconSize, g_trayIconSize, LR_SHARED);
-      FreeLibrary(hShell32);
-    }
-    if (!ti.hIcon) {
-      ti.hIcon = NULL;
-    }
+    ti.hIcon = hShell32 ? (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(17),
+                                             IMAGE_ICON, g_trayIconSize,
+                                             g_trayIconSize, LR_SHARED)
+                        : NULL;
     ti.width = g_trayIconSize;
     ti.height = g_trayIconSize;
     g_trayIcons.push_back(ti);
@@ -653,20 +644,17 @@ void AddCommonTrayIcons() {
     TrayIcon ti;
     ti.name = L"Power";
     ti.isRealIcon = false;
-
-    HMODULE hShell32 = LoadLibraryW(L"shell32.dll");
-    if (hShell32) {
-      ti.hIcon = (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(244), IMAGE_ICON,
-                                   g_trayIconSize, g_trayIconSize, LR_SHARED);
-      FreeLibrary(hShell32);
-    }
-    if (!ti.hIcon) {
-      ti.hIcon = NULL;
-    }
+    ti.hIcon = hShell32 ? (HICON)LoadImageW(hShell32, MAKEINTRESOURCE(244),
+                                             IMAGE_ICON, g_trayIconSize,
+                                             g_trayIconSize, LR_SHARED)
+                        : NULL;
     ti.width = g_trayIconSize;
     ti.height = g_trayIconSize;
     g_trayIcons.push_back(ti);
   }
+
+  if (hShell32)
+    FreeLibrary(hShell32);
 
   // Clock (last, on the right)
   {
@@ -1564,22 +1552,59 @@ void PopulateDesktopIcons() {
 
   LoadDesktopPositions();
 
+  // Build a set of grid cells already occupied by icons with saved positions.
+  // A cell is identified by its (col, row) index in the grid.
   int screenW = GetSystemMetrics(SM_CXSCREEN);
-  int curX = ICON_X_START;
-  int curY = ICON_Y_START;
-  for (auto &it : g_desktopItems) {
-    if (!it.hasPos) {
-      it.x = curX;
-      it.y = curY;
-      it.hasPos = true;
-    }
+  int colsPerRow = std::max(1, (screenW - ICON_X_START) / g_iconXSpacing);
 
-    curX += g_iconXSpacing;
-    if (curX + g_iconXSpacing > screenW) {
-      curX = ICON_X_START;
-      curY += g_iconYSpacing;
+  std::set<std::pair<int,int>> occupiedCells;
+  for (const auto &it : g_desktopItems) {
+    if (it.hasPos) {
+      // Snap back to nearest grid cell — robust even if icon was dragged to
+      // a non-grid pixel position before being saved.
+      int col = (it.x - ICON_X_START + g_iconXSpacing / 2) / g_iconXSpacing;
+      int row = (it.y - ICON_Y_START + g_iconYSpacing / 2) / g_iconYSpacing;
+      if (col < 0) col = 0;
+      if (row < 0) row = 0;
+      occupiedCells.insert({col, row});
     }
   }
+
+  // Assign each new (no saved position) icon to the first free grid cell.
+  int searchCol = 0, searchRow = 0;
+  auto nextFreeCell = [&]() -> std::pair<int,int> {
+    while (occupiedCells.count({searchCol, searchRow})) {
+      ++searchCol;
+      if (searchCol >= colsPerRow) {
+        searchCol = 0;
+        ++searchRow;
+      }
+    }
+    std::pair<int,int> cell = {searchCol, searchRow};
+    occupiedCells.insert(cell);
+    ++searchCol;
+    if (searchCol >= colsPerRow) {
+      searchCol = 0;
+      ++searchRow;
+    }
+    return cell;
+  };
+
+  bool anyNew = false;
+  for (auto &it : g_desktopItems) {
+    if (!it.hasPos) {
+      auto [col, row] = nextFreeCell();
+      it.x = ICON_X_START + col * g_iconXSpacing;
+      it.y = ICON_Y_START + row * g_iconYSpacing;
+      it.hasPos = true;
+      anyNew = true;
+    }
+  }
+
+  // Persist positions for any newly placed icons so they stay put on the
+  // next refresh rather than being re-placed from scratch.
+  if (anyNew)
+    SaveDesktopPositions();
 
   InvalidateRect(g_hDesktopWnd, NULL, TRUE);
 }
@@ -1875,7 +1900,6 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam,
       break;
     case IDM_DESKTOP_REFRESH:
       PopulateDesktopIcons();
-      ResetDesktopPositions();
       break;
 
     case IDM_VIEW_LARGE:
@@ -2011,8 +2035,8 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     return 0;
   }
   case WM_LBUTTONDOWN: {
-    int clickX = LOWORD(lParam);
-    int clickY = HIWORD(lParam);
+    int clickX = GET_X_LPARAM(lParam);
+    int clickY = GET_Y_LPARAM(lParam);
 
     // NOTE: Desktop clicks no longer close the start menu.
     // The start menu is only toggled by the blue square button on the
@@ -2054,14 +2078,15 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT msg, WPARAM wParam,
   case WM_MOUSEMOVE: {
     if (g_dragging && g_dragIndex >= 0 &&
         g_dragIndex < (int)g_desktopItems.size()) {
-      int mx = LOWORD(lParam);
-      int my = HIWORD(lParam);
+      int mx = GET_X_LPARAM(lParam);
+      int my = GET_Y_LPARAM(lParam);
       g_desktopItems[g_dragIndex].x = mx - g_dragOffsetX;
       g_desktopItems[g_dragIndex].y = my - g_dragOffsetY;
+      InvalidateRect(hwnd, NULL, FALSE);
       return 0;
     } else if (!g_dragging && g_showIcons) {
-      int mx = LOWORD(lParam);
-      int my = HIWORD(lParam);
+      int mx = GET_X_LPARAM(lParam);
+      int my = GET_Y_LPARAM(lParam);
       int newHovered = -1;
 
       for (size_t i = 0; i < g_desktopItems.size(); ++i) {
@@ -2440,8 +2465,8 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     return 0;
   }
   case WM_RBUTTONDOWN: {
-    int clickX = LOWORD(lParam);
-    int clickY = HIWORD(lParam);
+    int clickX = GET_X_LPARAM(lParam);
+    int clickY = GET_Y_LPARAM(lParam);
 
     // Taskbar right-click menu
     HMENU hMenu = CreatePopupMenu();
@@ -2450,6 +2475,7 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     AppendMenuW(hMenu, MF_STRING, IDM_RESTART_SHELL, L"Restart Shell");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
+    // Check if click is over a pinned icon — offer Unpin
     for (size_t i = 0; i < g_taskbarIcons.size() && i < 10; ++i) {
       if (g_taskbarIcons[i].visible && clickX >= g_taskbarIcons[i].x &&
           clickX < g_taskbarIcons[i].x + g_taskbarIcons[i].width &&
@@ -2464,7 +2490,49 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
 
         AppendMenuW(hMenu, MF_STRING, 40000 + i,
                     (L"Unpin \"" + appName + L"\" from taskbar").c_str());
+
+        // If the pinned app is running, also offer Kill
+        for (const auto &app : g_runningApps) {
+          if (_wcsicmp(GetAppExeName(app.exePath.c_str()).c_str(),
+                       GetAppExeName(appPath.c_str()).c_str()) == 0) {
+            AppendMenuW(hMenu, MF_STRING, 40020 + i,
+                        (L"Kill \"" + appName + L"\"").c_str());
+            break;
+          }
+        }
         break;
+      }
+    }
+
+    // Check if click is over an unpinned running app — offer Kill
+    {
+      int iconSize = 40, iconSpacing = 10;
+      int runningStartX = 6 + 55 + 10;
+      for (size_t i = 0; i < g_taskbarIcons.size(); ++i)
+        if (g_taskbarIcons[i].visible) runningStartX += iconSize + iconSpacing;
+      runningStartX += 20;
+
+      int rx = runningStartX;
+      for (size_t i = 0; i < g_runningApps.size(); ++i) {
+        bool pinned = false;
+        for (const auto &p : g_taskbarIcons)
+          if (_wcsicmp(GetAppExeName(g_runningApps[i].exePath.c_str()).c_str(),
+                       GetAppExeName(p.path.c_str()).c_str()) == 0)
+            { pinned = true; break; }
+        if (!pinned) {
+          int y = (g_taskbarHeight - iconSize) / 2;
+          if (clickX >= rx && clickX < rx + iconSize &&
+              clickY >= y && clickY < y + iconSize) {
+            std::wstring &exePath = g_runningApps[i].exePath;
+            size_t sl = exePath.find_last_of(L"\\");
+            std::wstring name = (sl != std::wstring::npos)
+                                    ? exePath.substr(sl + 1) : exePath;
+            AppendMenuW(hMenu, MF_STRING, 40030 + i,
+                        (L"Kill \"" + name + L"\"").c_str());
+            break;
+          }
+          rx += iconSize + iconSpacing;
+        }
       }
     }
 
@@ -2476,6 +2544,7 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, NULL);
 
     if (cmd >= 40000 && cmd < 40010) {
+      // Unpin pinned icon
       int idx = cmd - 40000;
       if (idx >= 0 && idx < (int)g_taskbarIcons.size()) {
         g_taskbarPinned.erase(std::remove(g_taskbarPinned.begin(),
@@ -2485,6 +2554,28 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
         SaveTaskbarConfig();
         PopulateTaskbarIcons();
         InvalidateRect(hwnd, NULL, TRUE);
+      }
+    } else if (cmd >= 40020 && cmd < 40030) {
+      // Kill a pinned-but-running app
+      int idx = cmd - 40020;
+      if (idx >= 0 && idx < (int)g_taskbarIcons.size()) {
+        std::wstring &appPath = g_taskbarIcons[idx].path;
+        for (const auto &app : g_runningApps) {
+          if (_wcsicmp(GetAppExeName(app.exePath.c_str()).c_str(),
+                       GetAppExeName(appPath.c_str()).c_str()) == 0) {
+            HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, app.processId);
+            if (hProc) { TerminateProcess(hProc, 1); CloseHandle(hProc); }
+            break;
+          }
+        }
+      }
+    } else if (cmd >= 40030 && cmd < 40030 + (int)g_runningApps.size()) {
+      // Kill an unpinned running app
+      int idx = cmd - 40030;
+      if (idx >= 0 && idx < (int)g_runningApps.size()) {
+        HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE,
+                                   g_runningApps[idx].processId);
+        if (hProc) { TerminateProcess(hProc, 1); CloseHandle(hProc); }
       }
     } else if (cmd == 40010) {
       ShowWindow(g_hStartMenuWnd,
@@ -2500,8 +2591,8 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
     return 0;
   }
   case WM_LBUTTONDOWN: {
-    int clickX = LOWORD(lParam);
-    int clickY = HIWORD(lParam);
+    int clickX = GET_X_LPARAM(lParam);
+    int clickY = GET_Y_LPARAM(lParam);
 
     // ==================== SYSTEM STATUS CLICKS ====================
     {
@@ -3260,6 +3351,9 @@ LRESULT CALLBACK StartMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam,
           }
 
           AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+          AppendMenuW(hMenu, MF_STRING, 51004, L"Open");
+          AppendMenuW(hMenu, MF_STRING, 51005, L"Run as administrator");
+          AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
           if (inTaskbar) {
             AppendMenuW(hMenu, MF_STRING, 51002, L"Unpin from Taskbar");
@@ -3303,6 +3397,17 @@ LRESULT CALLBACK StartMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam,
             SaveTaskbarConfig();
             PopulateTaskbarIcons();
             InvalidateRect(g_hTaskbarWnd, NULL, TRUE);
+          } else if (cmd == 51004) {
+            LaunchApp(item.fullPath.c_str());
+          } else if (cmd == 51005) {
+            SHELLEXECUTEINFOW sei = {};
+            sei.cbSize = sizeof(sei);
+            sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+            sei.lpVerb = L"runas";
+            sei.lpFile = item.fullPath.c_str();
+            sei.nShow = SW_SHOWNORMAL;
+            ShellExecuteExW(&sei);
+            if (sei.hProcess) CloseHandle(sei.hProcess);
           }
 
           DestroyMenu(hMenu);
@@ -3344,6 +3449,9 @@ LRESULT CALLBACK StartMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam,
         }
 
         AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuW(hMenu, MF_STRING, 50002, L"Open");
+        AppendMenuW(hMenu, MF_STRING, 50003, L"Run as administrator");
+        AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
         AppendMenuW(hMenu, MF_STRING, 50001, L"Remove from Start");
 
         POINT pt;
@@ -3368,6 +3476,17 @@ LRESULT CALLBACK StartMenuWndProc(HWND hwnd, UINT msg, WPARAM wParam,
           g_pinnedApps.erase(g_pinnedApps.begin() + i);
           SaveStartMenuPositions();
           InvalidateRect(hwnd, NULL, FALSE);
+        } else if (cmd == 50002) {
+          LaunchApp(g_pinnedApps[i].c_str());
+        } else if (cmd == 50003) {
+          SHELLEXECUTEINFOW sei = {};
+          sei.cbSize = sizeof(sei);
+          sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+          sei.lpVerb = L"runas";
+          sei.lpFile = g_pinnedApps[i].c_str();
+          sei.nShow = SW_SHOWNORMAL;
+          ShellExecuteExW(&sei);
+          if (sei.hProcess) CloseHandle(sei.hProcess);
         }
 
         DestroyMenu(hMenu);
@@ -3556,7 +3675,9 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
         }
       } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
         g_winKeyPressed = false;
-        return 1; // Block key up as well
+        // Don't block key up — let Windows see it so it clears its
+        // internal modifier state. Without this the OS thinks Win is
+        // still held and every subsequent key becomes Win+<key>.
       }
     }
   }
@@ -3630,8 +3751,8 @@ static void ForceFocusToDesktop() {
   if (fg == g_hDesktopWnd)
     return;
 
-  // Ensure WS_EX_NOACTIVATE is NOT set — it would silently block all focus
-  // transfers
+  // WS_EX_NOACTIVATE was set at creation to avoid stealing focus at startup;
+  // remove it here so SetForegroundWindow can actually transfer focus to us.
   LONG_PTR ex = GetWindowLongPtrW(g_hDesktopWnd, GWL_EXSTYLE);
   if (ex & WS_EX_NOACTIVATE) {
     SetWindowLongPtrW(g_hDesktopWnd, GWL_EXSTYLE, ex & ~WS_EX_NOACTIVATE);
@@ -3849,16 +3970,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
   g_hWinEventHook = SetWinEventHook(
       EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, NULL, WinEventProc, 0,
       0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-  SetWinEventHook(EVENT_OBJECT_PARENTCHANGE, EVENT_OBJECT_PARENTCHANGE, NULL,
-                  WinEventProc, 0, 0,
-                  WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-  SetWinEventHook(EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND, NULL,
-                  WinEventProc, 0, 0,
-                  WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  static HWINEVENTHOOK g_hWinEventHook2 = SetWinEventHook(
+      EVENT_OBJECT_PARENTCHANGE, EVENT_OBJECT_PARENTCHANGE, NULL, WinEventProc,
+      0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+  static HWINEVENTHOOK g_hWinEventHook3 = SetWinEventHook(
+      EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZEEND, NULL, WinEventProc, 0,
+      0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
 
   // --- Step 5: Icon layer — top-level WS_EX_LAYERED with per-pixel alpha ---
   g_hDesktopWnd = CreateWindowExW(
-      WS_EX_LAYERED | WS_EX_APPWINDOW, L"WorkerW", L"Desktop",
+      WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"WorkerW", L"Desktop",
       WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN, 0, 0, screenW,
       screenH - g_taskbarHeight, NULL, NULL, hInstance, NULL);
   if (!g_hDesktopWnd) {
@@ -3966,6 +4087,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int) {
   if (g_hWinEventHook) {
     UnhookWinEvent(g_hWinEventHook);
     g_hWinEventHook = NULL;
+  }
+  if (g_hWinEventHook2) {
+    UnhookWinEvent(g_hWinEventHook2);
+    g_hWinEventHook2 = NULL;
+  }
+  if (g_hWinEventHook3) {
+    UnhookWinEvent(g_hWinEventHook3);
+    g_hWinEventHook3 = NULL;
   }
 
   // Unregister AppBar
@@ -4280,7 +4409,6 @@ void ShowDesktopContextMenu(HWND hwnd, POINT pt) {
           if (cmd) {
             if (cmd == IDM_DESKTOP_REFRESH) {
               PopulateDesktopIcons();
-              ResetDesktopPositions();
               InvalidateRect(hwnd, NULL, TRUE);
             } else if (cmd == IDM_RESTART_SHELL) {
               wchar_t exePath[MAX_PATH];
