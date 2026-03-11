@@ -66,6 +66,8 @@ static bool g_fullscreenActive = false; // Track if a fullscreen app is running
 // Keyboard hook for Windows key
 static HHOOK g_keyboardHook = NULL;
 static bool g_winKeyPressed = false;
+// Set true before injecting Win+combo so the hook lets it pass through
+static bool g_suppressWinKeyHook = false;
 
 // AppBar callback message
 #define APPBAR_CALLBACK (WM_APP + 1)
@@ -2400,17 +2402,30 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
       int indX = rcClient.right - 90 - 6 - indTotalW - 10;
       int h = rcClient.bottom;
 
-      int volW = 40;
-      int netW = 40;
+      int acW = 80;  // Action Center button width (replaces Vol+Net)
       int batW = 80;
 
-      Gdiplus::RectF volRect((float)indX, 0.0f, (float)volW, (float)h);
-      Gdiplus::RectF netRect((float)(indX + volW), 0.0f, (float)netW, (float)h);
-      Gdiplus::RectF batRect((float)(indX + volW + netW), 0.0f, (float)batW,
-                             (float)h);
+      // Draw Action Center button — gray rounded pill
+      int acBtnMargin = 4;
+      Gdiplus::RectF acBtnRect((float)(indX + acBtnMargin),
+                               (float)acBtnMargin,
+                               (float)(acW - acBtnMargin * 2),
+                               (float)(h - acBtnMargin * 2));
+      Gdiplus::SolidBrush acBrush(Gdiplus::Color(180, 90, 90, 94));
+      int acR = 6;
+      Gdiplus::GraphicsPath acPath;
+      acPath.AddArc(acBtnRect.X, acBtnRect.Y, (float)(acR * 2), (float)(acR * 2), 180, 90);
+      acPath.AddArc(acBtnRect.X + acBtnRect.Width - acR * 2, acBtnRect.Y, (float)(acR * 2), (float)(acR * 2), 270, 90);
+      acPath.AddArc(acBtnRect.X + acBtnRect.Width - acR * 2, acBtnRect.Y + acBtnRect.Height - acR * 2, (float)(acR * 2), (float)(acR * 2), 0, 90);
+      acPath.AddArc(acBtnRect.X, acBtnRect.Y + acBtnRect.Height - acR * 2, (float)(acR * 2), (float)(acR * 2), 90, 90);
+      acPath.CloseFigure();
+      g.FillPath(&acBrush, &acPath);
 
-      g.DrawString(L"Vol", -1, &utilFont, volRect, &fmt, &textBrush);
-      g.DrawString(L"Net", -1, &utilFont, netRect, &fmt, &textBrush);
+      // Draw "⊞" or a simple notification bell label centered in the button
+      Gdiplus::RectF acLabelRect((float)indX, 0.0f, (float)acW, (float)h);
+      g.DrawString(L"🔔", -1, &utilFont, acLabelRect, &fmt, &textBrush);
+
+      Gdiplus::RectF batRect((float)(indX + acW), 0.0f, (float)batW, (float)h);
       g.DrawString(batStr.c_str(), -1, &utilFont, batRect, &fmt, &textBrush);
     }
 
@@ -2600,21 +2615,34 @@ LRESULT CALLBACK TaskbarWndProc(HWND hwnd, UINT msg, WPARAM wParam,
       GetClientRect(hwnd, &rcClient);
       int indTotalW = 160;
       int indX = rcClient.right - 90 - 6 - indTotalW - 10;
-      int volW = 40;
-      int netW = 40;
+      int acW = 80;  // Action Center button (replaces Vol+Net)
       int batW = 80;
       if (clickY >= 0 && clickY < rcClient.bottom) {
-        if (clickX >= indX && clickX < indX + volW) {
-          ShellExecuteW(NULL, L"open", L"sndvol.exe", NULL, NULL, SW_SHOW);
+        if (clickX >= indX && clickX < indX + acW) {
+          // Suppress our Win key hook so the injected Win+A reaches Windows
+          // as the Action Center shortcut, not our start menu toggle.
+          g_suppressWinKeyHook = true;
+          INPUT inputs[4] = {};
+          inputs[0].type = INPUT_KEYBOARD;
+          inputs[0].ki.wVk = VK_LWIN;
+          inputs[1].type = INPUT_KEYBOARD;
+          inputs[1].ki.wVk = 'A';
+          inputs[2].type = INPUT_KEYBOARD;
+          inputs[2].ki.wVk = 'A';
+          inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+          inputs[3].type = INPUT_KEYBOARD;
+          inputs[3].ki.wVk = VK_LWIN;
+          inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+          SendInput(4, inputs, sizeof(INPUT));
+          // Re-enable the hook after the keystrokes have been processed
+          SetTimer(hwnd, 9901, 300, [](HWND, UINT, UINT_PTR id, DWORD) {
+            KillTimer(NULL, id);
+            g_suppressWinKeyHook = false;
+          });
           return 0;
         }
-        if (clickX >= indX + volW && clickX < indX + volW + netW) {
-          ShellExecuteW(NULL, L"open", L"ms-settings:network", NULL, NULL,
-                        SW_SHOW);
-          return 0;
-        }
-        if (clickX >= indX + volW + netW &&
-            clickX < indX + volW + netW + batW) {
+        if (clickX >= indX + acW &&
+            clickX < indX + acW + batW) {
           ShellExecuteW(NULL, L"open", L"ms-settings:batterysaver", NULL, NULL,
                         SW_SHOW);
           return 0;
@@ -3628,6 +3656,12 @@ static void RestoreShellZOrder() {
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
   if (nCode == HC_ACTION) {
     KBDLLHOOKSTRUCT *pKeyboard = (KBDLLHOOKSTRUCT *)lParam;
+
+    // If we're injecting a Win+combo (e.g. Win+A for Action Center),
+    // let it pass straight through to Windows — don't intercept.
+    if (g_suppressWinKeyHook) {
+      return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
+    }
 
     // Check for Windows key (left or right)
     if (pKeyboard->vkCode == VK_LWIN || pKeyboard->vkCode == VK_RWIN) {
